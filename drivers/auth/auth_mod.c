@@ -284,14 +284,27 @@ static int auth_nvctr(const auth_method_param_nv_ctr_t *param,
 
 	if (*cert_nv_ctr < plat_nv_ctr) {
 		/* Invalid NV-counter */
+		NOTICE("Verifying NVCTR ... nv_ctr:%u,%u- Fail\n",
+		       cert_nv_ctr, plat_nv_ctr);
 		return 1;
 	} else if (*cert_nv_ctr > plat_nv_ctr) {
+#ifdef ANTI_ROLLBACK
+		NOTICE("Verifying NVCTR ... nv_ctr:%u,%u+ OK\n",
+		       cert_nv_ctr, plat_nv_ctr);
+		return 0;
+#else
+		rc = plat_set_nv_ctr2(param->plat_nv_ctr->cookie,
+			img_desc, cert_nv_ctr);
+		return_if_error(rc);
+#endif
 #if PSA_FWU_SUPPORT && IMAGE_BL2
 		is_trial_run = fwu_is_trial_run_state();
 #endif /* PSA_FWU_SUPPORT && IMAGE_BL2 */
 		*need_nv_ctr_upgrade = !is_trial_run;
 	}
 
+	NOTICE("Verifying NVCTR ... nv_ctr:%u,%u+ OK\n",
+	       cert_nv_ctr, plat_nv_ctr);
 	return 0;
 }
 
