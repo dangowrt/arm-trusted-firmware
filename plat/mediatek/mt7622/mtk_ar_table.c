@@ -8,6 +8,15 @@
 #include <common/debug.h>
 #include <ar_table.h>
 #include <efuse_cmd.h>
+#include <mtk_efuse.h>
+
+#define EFUSE_INDEX_AR_VERSION0			28
+#define EFUSE_INDEX_AR_VERSION1			29
+#define EFUSE_INDEX_AR_VERSION2			30
+#define EFUSE_INDEX_AR_VERSION3			31
+#define EFUSE_LENGTH_AR				4
+#define EFUSE_NUM_AR				4
+#define MAX_EFUSE_AR_VERSION			64
 
 #ifdef ANTI_ROLLBACK
 extern const uint32_t mtk_ar_table_num_entry;

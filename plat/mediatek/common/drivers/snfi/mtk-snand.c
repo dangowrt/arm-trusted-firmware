@@ -57,7 +57,15 @@
 #define FIFO_WR_REMAIN_S		8
 #define FIFO_RD_REMAIN_S		0
 
+#define NFI_ADDRCNTR			0x070
+#define SEC_CNTR			GENMASK(16, 12)
+#define SEC_CNTR_S			12
+#define NFI_SEC_CNTR(val)               (((val) & SEC_CNTR) >> SEC_CNTR_S)
+
 #define NFI_STRADDR			0x080
+
+#define NFI_BYTELEN			0x084
+#define BUS_SEC_CNTR(val)		(((val) & SEC_CNTR) >> SEC_CNTR_S)
 
 #define NFI_FDM0L			0x0a0
 #define NFI_FDM0M			0x0a4
@@ -75,6 +83,7 @@
 #define NFI_MASTERSTA_MASK_7622		(MAS_ADDR | MAS_RD | MAS_WR | MAS_RDDLY)
 #define AHB_BUS_BUSY			BIT(1)
 #define BUS_BUSY			BIT(0)
+#define NFI_MASTERSTA_MASK_7981		(AHB_BUS_BUSY | BUS_BUSY)
 #define NFI_MASTERSTA_MASK_7986		(AHB_BUS_BUSY | BUS_BUSY)
 
 /* SNFI registers */
@@ -110,6 +119,8 @@
 #define   DATA_READ_MODE_X4		2
 #define   DATA_READ_MODE_DUAL		5
 #define   DATA_READ_MODE_QUAD		6
+#define LATCH_LAT_S			8
+#define LATCH_LAT			GENMASK(9, 8)
 #define PG_LOAD_CUSTOM_EN		BIT(7)
 #define DATARD_CUSTOM_EN		BIT(6)
 #define CS_DESELECT_CYC_S		0
@@ -137,6 +148,11 @@
 
 static const uint8_t mt7622_spare_sizes[] = { 16, 26, 27, 28 };
 
+static const uint8_t mt7981_spare_sizes[] = {
+	16, 26, 27, 28, 32, 36, 40, 44, 48, 49, 50, 51, 52, 62, 61, 63, 64,
+	67, 74
+};
+
 static const uint8_t mt7986_spare_sizes[] = {
 	16, 26, 27, 28, 32, 36, 40, 44, 48, 49, 50, 51, 52, 62, 61, 63, 64,
 	67, 74
@@ -153,7 +169,9 @@ static const struct mtk_snand_soc_data mtk_snand_socs[__SNAND_SOC_MAX] = {
 		.empty_page_check = false,
 		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
 		.spare_sizes = mt7622_spare_sizes,
-		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
+		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes),
+		.latch_lat = 0,
+		.sample_delay = 40
 	},
 	[SNAND_SOC_MT7629] = {
 		.sector_size = 512,
@@ -165,7 +183,23 @@ static const struct mtk_snand_soc_data mtk_snand_socs[__SNAND_SOC_MAX] = {
 		.empty_page_check = false,
 		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
 		.spare_sizes = mt7622_spare_sizes,
-		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
+		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes),
+		.latch_lat = 0,
+		.sample_delay = 40
+	},
+	[SNAND_SOC_MT7981] = {
+		.sector_size = 1024,
+		.max_sectors = 16,
+		.fdm_size = 8,
+		.fdm_ecc_size = 1,
+		.fifo_size = 64,
+		.bbm_swap = true,
+		.empty_page_check = true,
+		.mastersta_mask = NFI_MASTERSTA_MASK_7981,
+		.spare_sizes = mt7981_spare_sizes,
+		.num_spare_size = ARRAY_SIZE(mt7981_spare_sizes),
+		.latch_lat = 0,
+		.sample_delay = 40
 	},
 	[SNAND_SOC_MT7986] = {
 		.sector_size = 1024,
@@ -177,7 +211,9 @@ static const struct mtk_snand_soc_data mtk_snand_socs[__SNAND_SOC_MAX] = {
 		.empty_page_check = true,
 		.mastersta_mask = NFI_MASTERSTA_MASK_7986,
 		.spare_sizes = mt7986_spare_sizes,
-		.num_spare_size = ARRAY_SIZE(mt7986_spare_sizes)
+		.num_spare_size = ARRAY_SIZE(mt7986_spare_sizes),
+		.latch_lat = 0,
+		.sample_delay = 40
 	},
 };
 
@@ -349,7 +385,7 @@ static int mtk_snand_mac_reset(struct mtk_snand *snf)
 		snand_log_snfi(snf->pdev, "Failed to reset SNFI MAC\n");
 
 	nfi_write32(snf, SNF_MISC_CTL, (2 << FIFO_RD_LTC_S) |
-		    (10 << CS_DESELECT_CYC_S));
+		    (10 << CS_DESELECT_CYC_S) | (snf->nfi_soc->latch_lat << LATCH_LAT_S));
 
 	return ret;
 }
@@ -645,9 +681,77 @@ static void mtk_snand_read_fdm(struct mtk_snand *snf, uint8_t *buf)
 	}
 }
 
+static int mtk_snand_read_ecc_parity(struct mtk_snand *snf, uint32_t page,
+				     uint32_t sect, uint8_t *oob)
+{
+	uint32_t ecc_bytes = snf->spare_per_sector - snf->nfi_soc->fdm_size;
+	uint32_t coladdr, raw_offs, offs;
+	uint8_t op[4];
+
+	if (sizeof(op) + ecc_bytes > SNF_GPRAM_SIZE) {
+		snand_log_snfi(snf->pdev,
+			       "ECC parity size does not fit the GPRAM\n");
+		return -ENOTSUPP;
+	}
+
+	raw_offs = sect * snf->raw_sector_size + snf->nfi_soc->sector_size +
+		   snf->nfi_soc->fdm_size;
+	offs = snf->ecc_steps * snf->nfi_soc->fdm_size + sect * ecc_bytes;
+
+	/* Column address with plane bit */
+	coladdr = raw_offs | mtk_snand_get_plane_address(snf, page);
+
+	op[0] = SNAND_CMD_READ_FROM_CACHE;
+	op[1] = (coladdr >> 8) & 0xff;
+	op[2] = coladdr & 0xff;
+	op[3] = 0;
+
+	return mtk_snand_mac_io(snf, op, sizeof(op), oob + offs, ecc_bytes);
+}
+
+static int mtk_snand_check_ecc_result(struct mtk_snand *snf, uint32_t page)
+{
+	uint8_t *oob = snf->page_cache + snf->writesize;
+	int i, rc, ret = 0, max_bitflips = 0;
+
+	for (i = 0; i < snf->ecc_steps; i++) {
+		if (snf->sect_bf[i] >= 0) {
+			if (snf->sect_bf[i] > max_bitflips)
+				max_bitflips = snf->sect_bf[i];
+			continue;
+		}
+
+		rc = mtk_snand_read_ecc_parity(snf, page, i, oob);
+		if (rc)
+			return rc;
+
+		rc = mtk_ecc_fixup_empty_sector(snf, i);
+		if (rc < 0) {
+			ret = -EBADMSG;
+
+			snand_log_ecc(snf->pdev,
+			      "Uncorrectable bitflips in page %u sect %u\n",
+			      page, i);
+		} else if (rc) {
+			snf->sect_bf[i] = rc;
+
+			if (snf->sect_bf[i] > max_bitflips)
+				max_bitflips = snf->sect_bf[i];
+
+			snand_log_ecc(snf->pdev,
+			      "%u bitflip%s corrected in page %u sect %u\n",
+			      rc, rc > 1 ? "s" : "", page, i);
+		} else {
+			snf->sect_bf[i] = 0;
+		}
+	}
+
+	return ret ? ret : max_bitflips;
+}
+
 static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
 {
-	uint32_t coladdr, rwbytes, mode, len;
+	uint32_t coladdr, rwbytes, mode, len, val;
 	uintptr_t dma_addr;
 	int ret;
 
@@ -667,7 +771,8 @@ static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
 
 	/* Set read mode */
 	mode = (uint32_t)snf->mode_rfc << DATA_READ_MODE_S;
-	nfi_rmw32(snf, SNF_MISC_CTL, DATA_READ_MODE, mode | DATARD_CUSTOM_EN);
+	nfi_rmw32(snf, SNF_MISC_CTL, DATA_READ_MODE,
+			mode | DATARD_CUSTOM_EN | (snf->nfi_soc->latch_lat << LATCH_LAT_S));
 
 	/* Set bytes to read */
 	rwbytes = snf->ecc_steps * snf->raw_sector_size;
@@ -715,6 +820,26 @@ static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
 		goto cleanup;
 	}
 
+	/* Wait for BUS_SEC_CNTR returning expected value */
+	ret = read32_poll_timeout(snf->nfi_base + NFI_BYTELEN, val,
+				  BUS_SEC_CNTR(val) >= snf->ecc_steps,
+				  0, SNFI_POLL_INTERVAL);
+	if (ret) {
+		snand_log_nfi(snf->pdev,
+			      "Timed out waiting for BUS_SEC_CNTR\n");
+		goto cleanup;
+	}
+
+	/* Wait for bus becoming idle */
+	ret = read32_poll_timeout(snf->nfi_base + NFI_MASTERSTA, val,
+				  !(val & snf->nfi_soc->mastersta_mask),
+				  0, SNFI_POLL_INTERVAL);
+	if (ret) {
+		snand_log_nfi(snf->pdev,
+			      "Timed out waiting for bus becoming idle\n");
+		goto cleanup;
+	}
+
 	if (!raw) {
 		ret = mtk_ecc_wait_decoder_done(snf);
 		if (ret)
@@ -722,17 +847,10 @@ static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
 
 		mtk_snand_read_fdm(snf, snf->page_cache + snf->writesize);
 
-		/*
-		 * For new IPs, ecc error may occur on empty pages.
-		 * Use an specific indication bit to check empty page.
-		 */
-		if (snf->nfi_soc->empty_page_check &&
-		    (nfi_read32(snf, NFI_STA) & READ_EMPTY))
-			ret = 0;
-		else
-			ret = mtk_ecc_check_decode_error(snf, page);
-
+		mtk_ecc_check_decode_error(snf);
 		mtk_snand_ecc_decoder_stop(snf);
+
+		ret = mtk_snand_check_ecc_result(snf, page);
 	}
 
 cleanup:
@@ -741,6 +859,7 @@ cleanup:
 
 	/* Stop read */
 	nfi_write32(snf, NFI_CON, 0);
+	nfi_write16(snf, NFI_CNFG, 0);
 
 	/* Clear SNF done flag */
 	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_READ_DONE);
@@ -750,7 +869,7 @@ cleanup:
 	nfi_read32(snf, NFI_INTR_STA);
 	nfi_write32(snf, NFI_INTR_EN, 0);
 
-	nfi_rmw32(snf, SNF_MISC_CTL, DATARD_CUSTOM_EN, 0);
+	nfi_rmw32(snf, SNF_MISC_CTL, DATARD_CUSTOM_EN | LATCH_LAT, 0);
 
 	return ret;
 }
@@ -786,11 +905,13 @@ static int mtk_snand_do_read_page(struct mtk_snand *snf, uint64_t addr,
 				  void *buf, void *oob, bool raw, bool format)
 {
 	uint64_t die_addr;
-	uint32_t page;
-	int ret;
+	uint32_t page, dly_ctrl3;
+	int ret, retry_cnt = 0;
 
 	die_addr = mtk_snand_select_die_address(snf, addr);
 	page = die_addr >> snf->writesize_shift;
+
+	dly_ctrl3 = nfi_read32(snf, SNF_DLY_CTL3);
 
 	ret = mtk_snand_page_op(snf, page, SNAND_CMD_READ_TO_CACHE);
 	if (ret)
@@ -802,9 +923,29 @@ static int mtk_snand_do_read_page(struct mtk_snand *snf, uint64_t addr,
 		return ret;
 	}
 
+retry:
 	ret = mtk_snand_read_cache(snf, page, raw);
 	if (ret < 0 && ret != -EBADMSG)
 		return ret;
+
+	if (ret == -EBADMSG && retry_cnt < 16) {
+		nfi_write32(snf, SNF_DLY_CTL3, retry_cnt * 2);
+		retry_cnt++;
+		goto retry;
+	}
+
+	if (retry_cnt) {
+		if(ret == -EBADMSG) {
+			nfi_write32(snf, SNF_DLY_CTL3, dly_ctrl3);
+			snand_log_chip(snf->pdev,
+				       "NFI calibration failed. Original sample delay: 0x%x\n",
+				       dly_ctrl3);
+		} else {
+			snand_log_chip(snf->pdev,
+				       "NFI calibration passed. New sample delay: 0x%x\n",
+				       nfi_read32(snf, SNF_DLY_CTL3));
+		}
+	}
 
 	if (raw) {
 		if (format) {
@@ -879,7 +1020,7 @@ static void mtk_snand_write_fdm(struct mtk_snand *snf, const uint8_t *buf)
 static int mtk_snand_program_load(struct mtk_snand *snf, uint32_t page,
 				  bool raw)
 {
-	uint32_t coladdr, rwbytes, mode, len;
+	uint32_t coladdr, rwbytes, mode, len, val;
 	uintptr_t dma_addr;
 	int ret;
 
@@ -949,6 +1090,16 @@ static int mtk_snand_program_load(struct mtk_snand *snf, uint32_t page,
 		goto cleanup;
 	}
 
+	/* Wait for NFI_SEC_CNTR returning expected value */
+	ret = read32_poll_timeout(snf->nfi_base + NFI_ADDRCNTR, val,
+				  NFI_SEC_CNTR(val) >= snf->ecc_steps,
+				  0, SNFI_POLL_INTERVAL);
+	if (ret) {
+		snand_log_nfi(snf->pdev,
+			      "Timed out waiting for BUS_SEC_CNTR\n");
+		goto cleanup;
+	}
+
 	if (!raw)
 		mtk_snand_ecc_encoder_stop(snf);
 
@@ -957,7 +1108,8 @@ cleanup:
 	dma_mem_unmap(snf->pdev, dma_addr, len, true);
 
 	/* Stop write */
-	nfi_write16(snf, NFI_CON, 0);
+	nfi_write32(snf, NFI_CON, 0);
+	nfi_write16(snf, NFI_CNFG, 0);
 
 	/* Clear SNF done flag */
 	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_PG_DONE);
@@ -1614,7 +1766,7 @@ static int mtk_snand_setup(struct mtk_snand *snf,
 
 	/* Tuning options */
 	nfi_write16(snf, NFI_DEBUG_CON1, WBUF_EN);
-	nfi_write32(snf, SNF_DLY_CTL3, (40 << SFCK_SAM_DLY_S));
+	nfi_write32(snf, SNF_DLY_CTL3, (snf->nfi_soc->sample_delay << SFCK_SAM_DLY_S));
 
 	/* Interrupts */
 	nfi_read32(snf, NFI_INTR_STA);
@@ -1683,8 +1835,8 @@ int mtk_snand_init(void *dev, const struct mtk_snand_platdata *pdata,
 		   struct mtk_snand **psnf)
 {
 	const struct snand_flash_info *snand_info;
+	uint32_t rawpage_size, sect_bf_size;
 	struct mtk_snand tmpsnf, *snf;
-	uint32_t rawpage_size;
 	int ret;
 
 	if (!pdata || !psnf)
@@ -1725,14 +1877,19 @@ int mtk_snand_init(void *dev, const struct mtk_snand_platdata *pdata,
 	rawpage_size = snand_info->memorg.pagesize +
 		       snand_info->memorg.sparesize;
 
+	sect_bf_size = mtk_snand_socs[pdata->soc].max_sectors *
+		       sizeof(*snf->sect_bf);
+
 	/* Allocate memory for instance and cache */
-	snf = generic_mem_alloc(dev, sizeof(*snf) + rawpage_size);
+	snf = generic_mem_alloc(dev,
+				sizeof(*snf) + rawpage_size + sect_bf_size);
 	if (!snf) {
 		snand_log_chip(dev, "Failed to allocate memory for instance\n");
 		return -ENOMEM;
 	}
 
-	snf->buf_cache = (uint8_t *)((uintptr_t)snf + sizeof(*snf));
+	snf->sect_bf = (int *)((uintptr_t)snf + sizeof(*snf));
+	snf->buf_cache = (uint8_t *)((uintptr_t)snf->sect_bf + sect_bf_size);
 
 	/* Allocate memory for DMA buffer */
 	snf->page_cache = dma_mem_alloc(dev, rawpage_size);

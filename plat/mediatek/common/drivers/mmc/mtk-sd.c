@@ -125,6 +125,26 @@
 #define SDC_FIFO_CFG_WRVALIDSEL		BIT(24)
 #define SDC_FIFO_CFG_RDVALIDSEL		BIT(25)
 
+/* EMMC_TOP_CONTROL */
+#define PAD_RXDLY_SEL			BIT(0)
+#define DELAY_EN			BIT(1)
+#define PAD_DAT_RD_RXSEL2_M		0x7c
+#define PAD_DAT_RD_RXSEL2_S		2
+#define PAD_DAT_RD_RXSEL_M		0xf80
+#define PAD_DAT_RD_RXSEL_S		7
+#define PAD_DAT_RD_RXDLY2_SEL		BIT(12)
+#define PAD_DAT_RD_RXDLY_SEL		BIT(13)
+#define DATA_K_VALUE_SEL		BIT(14)
+#define SDC_RX_ENH_EN			BIT(15)
+
+/* EMMC_TOP_CMD mask */
+#define PAD_CMD_RXDLY2_M		0x1f
+#define PAD_CMD_RXDLY2_S		0
+#define PAD_CMD_RXDLY_M			0x3e0
+#define PAD_CMD_RXDLY_S			5
+#define PAD_CMD_RD_RXDLY2_SEL		BIT(10)
+#define PAD_CMD_RD_RXDLY_SEL		BIT(11)
+
 /* SDC_CFG_BUSWIDTH */
 #define MSDC_BUS_1BITS			0x0
 #define MSDC_BUS_4BITS			0x1
@@ -238,8 +258,16 @@ struct msdc_tune_para {
 	uint32_t pad_tune;
 };
 
+struct mtk_sd_top_regs {
+	uint32_t emmc_top_control;
+	uint32_t emmc_top_cmd;
+	uint32_t emmc50_pad_ctl0;
+	uint32_t emmc50_pad_ds_tune;
+};
+
 static struct msdc_host {
 	struct mtk_sd_regs *base;
+	struct mtk_sd_top_regs *top_base;
 	const struct msdc_compatible *dev_comp;
 
 	uint32_t src_clk_freq;	/* source clock */
@@ -384,11 +412,17 @@ static int msdc_cmd_done(struct msdc_host *host, int events,
 		msdc_reset_hw(host);
 
 		if (events & MSDC_INT_CMDTMO) {
-			ERROR("MSDC: Command has timed out\n");
+			ERROR("MSDC: Command has timed out with cmd=%d, arg=0x%x\n",
+				cmd->cmd_idx, cmd->cmd_arg);
 			ret = -ETIMEDOUT;
-		} else {
-			ERROR("MSDC: Command failed\n");
+		} else if (events & MSDC_INT_RSPCRCERR){
+			ERROR("MSDC: Command has CRC error with cmd=%d, arg=0x%x\n",
+				cmd->cmd_idx, cmd->cmd_arg);
 			ret = -EIO;
+		} else {
+			ERROR("MSDC: Recieve unexpected response INT with cmd=%d, arg=0x%x\n",
+				cmd->cmd_idx, cmd->cmd_arg);
+			ret = EINVAL;
 		}
 	}
 
@@ -451,8 +485,11 @@ static int msdc_start_command(struct msdc_host *host, struct mmc_cmd *cmd)
 
 	ret = readl_poll_timeout(&host->base->msdc_int, status,
 				 status & CMD_INTS_MASK, 1000000);
-	if (ret)
+	if (ret) {
+		ERROR("MSDC: cannot wait INT with cmd=%d, arg=0x%x\n",
+				cmd->cmd_idx, cmd->cmd_arg);
 		status = MSDC_INT_CMDTMO;
+	}
 
 	return msdc_cmd_done(host, status, cmd);
 }
@@ -639,6 +676,7 @@ static int mtk_mmc_read(int lba, uintptr_t buf, size_t size)
 
 	uint32_t status;
 	uint32_t chksz;
+	uint32_t cmd_idx, cmd_arg;
 	int ret = 0;
 
 	new_xfer = false;
@@ -648,6 +686,9 @@ static int mtk_mmc_read(int lba, uintptr_t buf, size_t size)
 		return -EINVAL;
 	}
 
+	cmd_idx = mmio_read_32((uintptr_t)&host->base->sdc_cmd) & 0x3f;
+	cmd_arg = mmio_read_32((uintptr_t)&host->base->sdc_arg);
+
 	mmio_write_32((uintptr_t)&host->base->msdc_int, DATA_INTS_MASK);
 
 	while (1) {
@@ -656,13 +697,15 @@ static int mtk_mmc_read(int lba, uintptr_t buf, size_t size)
 		status &= DATA_INTS_MASK;
 
 		if (status & MSDC_INT_DATCRCERR) {
-			ERROR("MSDC: CRC error occured while reading data\n");
+			ERROR("MSDC: CRC error occured while reading data with cmd=%d, arg=0x%x\n",
+				cmd_idx, cmd_arg);
 			ret = -EIO;
 			break;
 		}
 
 		if (status & MSDC_INT_DATTMO) {
-			ERROR("MSDC: Timeout occured while reading data\n");
+			ERROR("MSDC: timeout occured while reading data with cmd=%d, arg=0x%x\n",
+				cmd_idx, cmd_arg);
 			ret = -ETIMEDOUT;
 			break;
 		}
@@ -724,6 +767,10 @@ static void msdc_init_hw(void)
 	mmio_write_32((uintptr_t)&host->base->msdc_inten,
 		      DATA_INTS_MASK | CMD_INTS_MASK);
 	mmio_write_32(tune_reg, 0);
+	if(host->top_base) {
+		mmio_write_32((uintptr_t)&host->top_base->emmc_top_control, 0);
+		mmio_write_32((uintptr_t)&host->top_base->emmc_top_cmd, 0);
+	}
 	mmio_write_32((uintptr_t)&host->base->msdc_iocon, 0);
 
 	if (host->dev_comp->r_smpl)
@@ -736,10 +783,15 @@ static void msdc_init_hw(void)
 	mmio_write_32((uintptr_t)&host->base->patch_bit0, 0x403c0046);
 	mmio_write_32((uintptr_t)&host->base->patch_bit1, 0xffff4089);
 
-	if (host->dev_comp->stop_clk_fix)
+	if (host->dev_comp->stop_clk_fix) {
+		mmio_clrbits_32((uintptr_t)&host->base->sdc_fifo_cfg,
+				SDC_FIFO_CFG_WRVALIDSEL);
+		mmio_clrbits_32((uintptr_t)&host->base->sdc_fifo_cfg,
+				SDC_FIFO_CFG_RDVALIDSEL);
 		mmio_clrsetbits_32((uintptr_t)&host->base->patch_bit1,
 				   MSDC_PB1_STOP_DLY_M,
 				   3 << MSDC_PB1_STOP_DLY_S);
+	}
 
 	if (host->dev_comp->busy_check)
 		mmio_clrbits_32((uintptr_t)&host->base->patch_bit1, (1 << 7));
@@ -753,8 +805,12 @@ static void msdc_init_hw(void)
 				   3 << MSDC_PB2_RESPWAIT_S);
 
 		if (host->dev_comp->enhance_rx) {
-			mmio_setbits_32((uintptr_t)&host->base->sdc_adv_cfg0,
-					SDC_RX_ENHANCE_EN);
+			if (host->top_base)
+				mmio_setbits_32((uintptr_t)&host->top_base->emmc_top_control,
+						SDC_RX_ENH_EN);
+			else
+				mmio_setbits_32((uintptr_t)&host->base->sdc_adv_cfg0,
+						SDC_RX_ENHANCE_EN);
 		} else {
 			mmio_clrsetbits_32((uintptr_t)&host->base->patch_bit2,
 					   MSDC_PB2_RESPSTSENSEL_M,
@@ -772,8 +828,17 @@ static void msdc_init_hw(void)
 	}
 
 	if (host->dev_comp->data_tune) {
-		mmio_setbits_32(tune_reg,
-				MSDC_PAD_TUNE_RD_SEL | MSDC_PAD_TUNE_CMD_SEL);
+		if (host->top_base) {
+			mmio_setbits_32((uintptr_t)&host->top_base->emmc_top_control,
+					PAD_DAT_RD_RXDLY_SEL);
+			mmio_clrbits_32((uintptr_t)&host->top_base->emmc_top_control,
+					DATA_K_VALUE_SEL);
+			mmio_setbits_32((uintptr_t)&host->top_base->emmc_top_cmd,
+					PAD_CMD_RD_RXDLY_SEL);
+		} else {
+			mmio_setbits_32(tune_reg,
+					MSDC_PAD_TUNE_RD_SEL | MSDC_PAD_TUNE_CMD_SEL);
+		}
 		mmio_clrsetbits_32((uintptr_t)&host->base->patch_bit0,
 				   MSDC_INT_DAT_LATCH_CK_SEL_M,
 				   host->dev_comp->latch_ck <<
@@ -793,13 +858,6 @@ static void msdc_init_hw(void)
 	mmio_clrsetbits_32((uintptr_t)&host->base->sdc_cfg, SDC_CFG_DTOC_M,
 			   3 << SDC_CFG_DTOC_S);
 
-	if (host->dev_comp->stop_clk_fix) {
-		mmio_clrbits_32((uintptr_t)&host->base->sdc_fifo_cfg,
-				SDC_FIFO_CFG_WRVALIDSEL);
-		mmio_clrbits_32((uintptr_t)&host->base->sdc_fifo_cfg,
-				SDC_FIFO_CFG_RDVALIDSEL);
-	}
-
 	host->def_tune_para.iocon =
 			mmio_read_32((uintptr_t)&host->base->msdc_iocon);
 	host->def_tune_para.pad_tune =
@@ -818,13 +876,15 @@ static const struct mmc_ops mtk_mmc_ops = {
 	.write = mtk_mmc_write,
 };
 
-void mtk_mmc_init(uintptr_t reg_base, const struct msdc_compatible *compat,
+void mtk_mmc_init(uintptr_t reg_base,  uintptr_t top_reg_base,
+		  const struct msdc_compatible *compat,
 		  uint32_t src_clk, enum mmc_device_type type,
 		  uint32_t bus_width)
 {
 	struct msdc_host *host = &_host;
 
 	host->base = (struct mtk_sd_regs *)reg_base;
+	host->top_base = (struct mtk_sd_top_regs *)top_reg_base;
 	host->dev_comp = compat;
 
 	host->src_clk_freq = src_clk;

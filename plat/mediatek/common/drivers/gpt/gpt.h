@@ -13,6 +13,7 @@
 
 enum mtk_gpt_soc {
 	GPT_SOC_MT7622,
+	GPT_SOC_MT7981,
 	GPT_SOC_MT7986,
 
 	__GPT_SOC_MAX

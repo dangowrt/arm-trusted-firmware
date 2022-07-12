@@ -20,6 +20,8 @@
 #define GPIO_PULL_DOWN		ARM_TF_GPIO_PULL_DOWN
 
 typedef struct gpio_ops {
+	int (*get_mode)(int gpio);
+	void (*set_mode)(int gpio, int mode);
 	int (*get_direction)(int gpio);
 	void (*set_direction)(int gpio, int direction);
 	int (*get_value)(int gpio);

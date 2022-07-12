@@ -11,7 +11,7 @@
 #include <mtcmos.h>
 #include <mtk_sip_svc.h>
 #include <plat_sip_calls.h>
-#include <efuse_cmd.h>
+#include <mtk_efuse.h>
 #include <string.h>
 #include <ar_table.h>
 
@@ -67,18 +67,19 @@ static uint64_t mt_sip_pwr_mtcmos_support(void)
 	return MTK_SIP_E_SUCCESS;
 }
 
-uint64_t mediatek_plat_sip_handler(uint32_t smc_fid,
-				   uint64_t x1,
-				   uint64_t x2,
-				   uint64_t x3,
-				   uint64_t x4,
+uintptr_t mediatek_plat_sip_handler(uint32_t smc_fid,
+				   u_register_t x1,
+				   u_register_t x2,
+				   u_register_t x3,
+				   u_register_t x4,
 				   void *cookie,
 				   void *handle,
-				   uint64_t flags)
+				   u_register_t flags)
 {
-	uint64_t ret;
-	uint64_t read_buffer[4] = { 0 };
-	uint64_t write_buffer[4] = { x1, x2, x3, x4 };
+	uint32_t ret;
+	uint32_t efuse_len = 0;
+	uint32_t efuse_data[2] = { (uint32_t)x3, (uint32_t)x4 };
+	static uint32_t efuse_buffer[MTK_EFUSE_PUBK_HASH_INDEX_MAX];
 	uint32_t image_fit_ar_ver = (uint32_t)x1;
 	uint32_t plat_fit_ar_ver = 0;
 
@@ -95,46 +96,35 @@ uint64_t mediatek_plat_sip_handler(uint32_t smc_fid,
 		ret = mt_sip_pwr_mtcmos_support();
 		SMC_RET1(handle, ret);
 
+	case MTK_SIP_EFUSE_GET_LEN:
+		ret = mtk_efuse_get_len((uint32_t)x1, &efuse_len);
+		SMC_RET4(handle, ret, efuse_len, 0x0, 0x0);
+
+	case MTK_SIP_EFUSE_SEND_DATA:
+		ret = mtk_efuse_send_data((uint8_t *)efuse_buffer,
+					  (uint8_t *)efuse_data,
+					  (uint32_t)x1,
+					  (uint32_t)x2);
+		SMC_RET4(handle, ret, x2, 0x0, 0x0);
+
+	case MTK_SIP_EFUSE_GET_DATA:
+		ret = mtk_efuse_get_data((uint8_t *)efuse_data,
+					 (uint8_t *)efuse_buffer,
+					 (uint32_t)x1,
+					 (uint32_t)x2);
+		SMC_RET4(handle, ret, x2, efuse_data[0], efuse_data[1]);
+
 	case MTK_SIP_EFUSE_READ:
-		ret = efuse_read((uint32_t)x1,
-				 (uint8_t *)read_buffer,
-				 (uint32_t)x2);
-		if (!ret) {
-			SMC_RET4(handle, read_buffer[0], read_buffer[1],
-					 read_buffer[2], read_buffer[3]);
-		} else {
-			SMC_RET1(handle, ret);
-		}
+		ret = mtk_efuse_read((uint32_t)x1,
+				     (uint8_t *)efuse_buffer,
+				     sizeof(efuse_buffer));
+		SMC_RET4(handle, ret, 0x0, 0x0, 0x0);
 
 	case MTK_SIP_EFUSE_WRITE:
-		ret = efuse_write((uint32_t)x1,
-				  (const uint8_t *)&x2,
-				  (uint32_t)x3);
-		SMC_RET1(handle, ret);
-
-	case MTK_SIP_EFUSE_WRITE_SBC_PUBK0_HASH:
-		ret = efuse_write((uint32_t)EFUSE_INDEX_SBC_PUBK0_HASH,
-				  (const uint8_t *)write_buffer,
-				  (uint32_t)EFUSE_LENGTH_HASH);
-		SMC_RET1(handle, ret);
-
-	case MTK_SIP_EFUSE_WRITE_SBC_PUBK1_HASH:
-		ret = efuse_write((uint32_t)EFUSE_INDEX_SBC_PUBK1_HASH,
-				  (const uint8_t *)write_buffer,
-				  (uint32_t)EFUSE_LENGTH_HASH);
-		SMC_RET1(handle, ret);
-
-	case MTK_SIP_EFUSE_WRITE_SBC_PUBK2_HASH:
-		ret = efuse_write((uint32_t)EFUSE_INDEX_SBC_PUBK2_HASH,
-				  (const uint8_t *)write_buffer,
-				  (uint32_t)EFUSE_LENGTH_HASH);
-		SMC_RET1(handle, ret);
-
-	case MTK_SIP_EFUSE_WRITE_SBC_PUBK3_HASH:
-		ret = efuse_write((uint32_t)EFUSE_INDEX_SBC_PUBK3_HASH,
-				  (const uint8_t *)write_buffer,
-				  (uint32_t)EFUSE_LENGTH_HASH);
-		SMC_RET1(handle, ret);
+		ret = mtk_efuse_write((uint32_t)x1,
+				      (uint8_t *)efuse_buffer,
+				      sizeof(efuse_buffer));
+		SMC_RET4(handle, ret, 0x0, 0x0, 0x0);
 
 	case MTK_SIP_CHECK_FIT_AR_VER:
 		ret = mtk_antirollback_get_fit_ar_ver(&plat_fit_ar_ver);

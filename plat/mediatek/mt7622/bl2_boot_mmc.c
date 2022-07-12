@@ -110,7 +110,7 @@ void mtk_boot_dev_setup(const io_dev_connector_t **boot_dev_con,
 	for (i = 0; i < conf->pinmux->count; i++)
 		mtk_set_pin_mode(conf->pinmux->pins[i], conf->pinmux->mux);
 
-	mtk_mmc_init(conf->base, conf->dev_comp, conf->src_clk, conf->type,
+	mtk_mmc_init(conf->base, 0, conf->dev_comp, conf->src_clk, conf->type,
 		     conf->bus_width);
 
 	result = register_io_dev_block(boot_dev_con);
@@ -128,7 +128,7 @@ void mtk_boot_dev_setup(const io_dev_connector_t **boot_dev_con,
 		panic();
 	}
 
-	INFO("Located GPT partition 'fip' at 0x%llx, size 0x%llx\n",
+	INFO("Located GPT partition 'fip' at 0x%lx, size 0x%lx\n",
 	       entry->start, entry->length);
 
 	fip_desc->offset = entry->start;

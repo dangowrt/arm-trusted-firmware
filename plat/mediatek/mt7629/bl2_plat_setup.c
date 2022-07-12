@@ -10,6 +10,7 @@
 #include <common/debug.h>
 #include <common/desc_image_load.h>
 #include <common/tbbr/tbbr_img_def.h>
+#include <common/image_decompress.h>
 #include <drivers/generic_delay_timer.h>
 #include <drivers/io/io_block.h>
 #include <drivers/io/io_fip.h>
@@ -23,6 +24,7 @@
 #include <pll.h>
 #include <cpuxgpt.h>
 #include <tools_share/firmware_image_package.h>
+#include <tf_unxz.h>
 
 static bl_mem_params_node_t bl2_mem_params_descs[] = {
 	/* Fill BL32 related information */
@@ -209,6 +211,49 @@ void bl2_platform_setup(void)
 	mtk_pll_init();
 	mtk_mem_init();
 	mtk_io_setup();
+}
+
+static struct image_info *get_image_info(unsigned int image_id)
+{
+	struct bl_mem_params_node *desc;
+
+	desc = get_bl_mem_params_node(image_id);
+	if (!desc)
+		return NULL;
+
+	return &desc->image_info;
+}
+
+void bl2_plat_preload_setup(void)
+{
+	image_decompress_init(FIP_DECOMP_TEMP_BASE, FIP_DECOMP_TEMP_SIZE, unxz);
+}
+
+int bl2_plat_handle_pre_image_load(unsigned int image_id)
+{
+	struct image_info *image_info;
+
+	image_info = get_image_info(image_id);
+	if (!image_info)
+		return -ENODEV;
+
+	image_decompress_prepare(image_info);
+
+	return 0;
+}
+
+int bl2_plat_handle_post_image_load(unsigned int image_id)
+{
+	struct image_info *image_info = get_image_info(image_id);
+	int ret;
+
+	if (!(image_info->h.attr & IMAGE_ATTRIB_SKIP_LOADING)) {
+		ret = image_decompress(image_info);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 struct bl_load_info *plat_get_bl_image_load_info(void)

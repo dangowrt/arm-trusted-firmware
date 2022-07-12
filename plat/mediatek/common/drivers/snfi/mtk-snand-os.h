@@ -31,6 +31,8 @@ struct mtk_snand_plat_dev {
 #define DIV_ROUND_UP(n, d)		(((n) + (d) - 1) / (d))
 #define unlikely(x)			(x)
 
+#define BITS_PER_BYTE			8
+
 /* Size definitions */
 #define SZ_512				0x00000200
 #define SZ_2K				0x00000800
@@ -222,6 +224,22 @@ static inline int fls(int x)
 	}
 
 	return r;
+}
+
+static inline unsigned int hweight8(unsigned int w)
+{
+	unsigned int res = (w & 0x55) + ((w >> 1) & 0x55);
+	res = (res & 0x33) + ((res >> 2) & 0x33);
+	return (res & 0x0f) + ((res >> 4) & 0x0f);
+}
+
+static inline unsigned int hweight32(unsigned int w)
+{
+	unsigned int res = (w & 0x55555555) + ((w >> 1) & 0x55555555);
+	res = (res & 0x33333333) + ((res >> 2) & 0x33333333);
+	res = (res & 0x0f0f0f0f) + ((res >> 4) & 0x0f0f0f0f);
+	res = (res & 0x00ff00ff) + ((res >> 8) & 0x00ff00ff);
+	return (res & 0x0000ffff) + ((res >> 16) & 0x0000ffff);
 }
 
 #endif /* _MTK_SNAND_OS_H_ */

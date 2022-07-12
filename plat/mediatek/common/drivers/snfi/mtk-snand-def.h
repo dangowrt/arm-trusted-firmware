@@ -115,6 +115,9 @@ struct mtk_snand_soc_data {
 
 	const uint8_t *spare_sizes;
 	uint32_t num_spare_size;
+
+	uint16_t latch_lat;
+	uint16_t sample_delay;
 };
 
 enum mtk_ecc_regs {
@@ -174,6 +177,7 @@ struct mtk_snand {
 
 	uint8_t *page_cache;	/* Used by read/write page */
 	uint8_t *buf_cache;	/* Used by block bad/markbad & auto_oob */
+	int *sect_bf;		/* Used by ECC correction */
 };
 
 enum mtk_snand_log_category {
@@ -192,7 +196,8 @@ void mtk_snand_ecc_encoder_stop(struct mtk_snand *snf);
 int mtk_snand_ecc_decoder_start(struct mtk_snand *snf);
 void mtk_snand_ecc_decoder_stop(struct mtk_snand *snf);
 int mtk_ecc_wait_decoder_done(struct mtk_snand *snf);
-int mtk_ecc_check_decode_error(struct mtk_snand *snf, uint32_t page);
+int mtk_ecc_check_decode_error(struct mtk_snand *snf);
+int mtk_ecc_fixup_empty_sector(struct mtk_snand *snf, uint32_t sect);
 
 int mtk_snand_mac_io(struct mtk_snand *snf, const uint8_t *out, uint32_t outlen,
 		     uint8_t *in, uint32_t inlen);

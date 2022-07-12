@@ -19,6 +19,11 @@
 
 #include "bl2_private.h"
 
+__attribute__((weak)) int mtk_ar_update_bl_ar_ver(void)
+{
+	return 0;
+}
+
 /*******************************************************************************
  * This function loads SCP_BL2/BL3x images and returns the ep_info for
  * the next executable image.
@@ -106,6 +111,13 @@ struct entry_point_info *bl2_load_images(void)
 
 	/* Flush the parameters to be passed to next image */
 	plat_flush_next_bl_params();
+
+	/* Update boot loader anti-rollback version */
+	err = mtk_ar_update_bl_ar_ver();
+	if (err != 0) {
+		ERROR("BL2: Failure in updating anti-rollback version (%i)\n", err);
+		plat_error_handler(err);
+	}
 
 	return bl2_to_next_bl_params->head->ep_info;
 }

@@ -69,6 +69,27 @@ void sp_min_early_platform_setup2(u_register_t arg0, u_register_t arg1,
 
 	VERBOSE("sp_min_setup\n");
 
+	/*
+	 * setup mpu to protect TZRAM (0x43000000 ~ 0x43200000)
+	 * disallow non-secure read and write
+	 */
+	mmio_write_32(0x10203160, 0x03000320);
+	mmio_write_32(0x102031A0, 0x00008249);
+
+	/*
+	 * setup devapc to protect eFuse
+	 * disallow non-secure write
+	 */
+	mmio_write_32(0x10007f00, 0x80000001);
+	mmio_write_32(0x10207f00, 0x80000001);
+	mmio_write_32(0x10007004, 0x00000080);
+
+	/*
+	 * setup devapc to protect devapc
+	 * disallow non-secure read and write
+	 */
+	mmio_write_32(0x10007000, 0x00004000);
+
 	bl_params_t *params_from_bl2 = (bl_params_t *)arg0;
 
 	/* Imprecise aborts can be masked in NonSecure */

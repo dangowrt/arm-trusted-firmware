@@ -10,6 +10,9 @@ ARM_ARCH_MAJOR		:=	7
 MARCH32_DIRECTIVE	:=	-mcpu=cortex-a7 -msoft-float
 BL2_AT_EL3		:=	1
 
+include make_helpers/dep.mk
+include lib/xz/xz.mk
+
 # Not needed for Cortex-A7
 WORKAROUND_CVE_2017_5715:=	0
 
@@ -18,14 +21,14 @@ MTK_PLAT_SOC		:=	${MTK_PLAT}/${PLAT}
 
 PLAT_INCLUDES		:=	-I${MTK_PLAT}/common/				\
 				-I${MTK_PLAT}/common/drivers/uart		\
+				-I${MTK_PLAT}/common/drivers/efuse		\
+				-I${MTK_PLAT}/common/drivers/efuse/include	\
 				-Iinclude/plat/arm/common			\
 				-I${MTK_PLAT_SOC}/drivers/dram/			\
 				-I${MTK_PLAT_SOC}/drivers/pinctrl/		\
 				-I${MTK_PLAT_SOC}/drivers/pll/			\
 				-I${MTK_PLAT_SOC}/drivers/spm/			\
 				-I${MTK_PLAT_SOC}/drivers/timer/		\
-				-I${MTK_PLAT_SOC}/drivers/efuse/		\
-				-I${MTK_PLAT_SOC}/drivers/efuse/include/	\
 				-I${MTK_PLAT_SOC}/include/
 
 PLAT_BL_COMMON_SOURCES	:=	lib/xlat_tables/xlat_tables_common.c		\
@@ -39,10 +42,12 @@ PLAT_BL_COMMON_SOURCES	:=	lib/xlat_tables/xlat_tables_common.c		\
 				${MTK_PLAT_SOC}/aarch32/platform_common.c
 
 BL2_SOURCES		:=	common/desc_image_load.c			\
+				common/image_decompress.c			\
 				drivers/gpio/gpio.c				\
 				drivers/io/io_storage.c				\
 				drivers/io/io_block.c				\
 				drivers/io/io_fip.c				\
+				$(XZ_SOURCES)					\
 				${MTK_PLAT_SOC}/bl2_plat_setup.c		\
 				${MTK_PLAT_SOC}/drivers/pinctrl/pinctrl.c	\
 				${MTK_PLAT_SOC}/drivers/pll/pll.c		\
@@ -71,6 +76,10 @@ BROM_HEADER_TYPE	:=	nor
 ifeq ($(RAM_BOOT_DEBUGGER_HOOK), 1)
 CPPFLAGS		+=	-DRAM_BOOT_DEBUGGER_HOOK
 endif
+ifeq ($(RAM_BOOT_UART_DL), 1)
+BL2_SOURCES		+=	${MTK_PLAT}/common/uart_dl.c
+CPPFLAGS		+=	-DRAM_BOOT_UART_DL
+endif
 endif
 ifeq ($(BOOT_DEVICE),nor)
 BL2_SOURCES		+=	drivers/io/io_memmap.c				\
@@ -86,6 +95,20 @@ BL2_SOURCES		+=	${MTK_SNAND_SOURCES}				\
 PLAT_INCLUDES		+=	-I${MTK_PLAT}/common/drivers/snfi
 CPPFLAGS		+=	-DMTK_MEM_POOL_BASE=0x40100000			\
 				-DPRIVATE_MTK_SNAND_HEADER
+ifeq ($(NMBM),1)
+include lib/nmbm/nmbm.mk
+BL2_SOURCES		+=	${NMBM_SOURCES}
+CPPFLAGS		+=	-DNMBM=1
+ifneq ($(NMBM_MAX_RATIO),)
+CPPFLAGS		+=	-DNMBM_MAX_RATIO=$(NMBM_MAX_RATIO)
+endif
+ifneq ($(NMBM_MAX_RESERVED_BLOCKS),)
+CPPFLAGS		+=	-DNMBM_MAX_RESERVED_BLOCKS=$(NMBM_MAX_RESERVED_BLOCKS)
+endif
+ifneq ($(NMBM_DEFAULT_LOG_LEVEL),)
+CPPFLAGS		+=	-DNMBM_DEFAULT_LOG_LEVEL=$(NMBM_DEFAULT_LOG_LEVEL)
+endif
+endif
 endif
 ifeq ($(BROM_HEADER_TYPE),)
 $(error BOOT_DEVICE has invalid value. Please re-check.)
@@ -98,10 +121,10 @@ CPPFLAGS		+=	-DBL2_BASE=$(BL2_BASE) -D__SOFTFP__
 DOIMAGEPATH		:=	tools/mediatek/bromimage
 DOIMAGETOOL		:=	${DOIMAGEPATH}/bromimage
 
-HAVE_EFUSE_SRC_FILE	:=	$(shell test -f ${MTK_PLAT_SOC}/drivers/efuse/src/efuse_cmd.c && echo yes)
+HAVE_EFUSE_SRC_FILE	:= 	$(shell test -f ${MTK_PLAT}/common/drivers/efuse/src/efuse_cmd.c && echo yes)
 ifeq ($(HAVE_EFUSE_SRC_FILE),yes)
-PLAT_INCLUDES		+=	-I${MTK_PLAT_SOC}/drivers/efuse/src
-BL32_SOURCES		+=	${MTK_PLAT_SOC}/drivers/efuse/src/efuse_cmd.c
+PLAT_INCLUDES		+=	-I${MTK_PLAT}/common/drivers/efuse/src
+BL31_SOURCES		+=	${MTK_PLAT}/common/drivers/efuse/src/efuse_cmd.c
 else
 PREBUILT_LIBS		+=	${MTK_PLAT_SOC}/drivers/efuse/release/efuse_cmd.o
 endif
@@ -118,8 +141,8 @@ BL32_SOURCES		+=	drivers/arm/cci/cci.c				\
 				plat/common/plat_gicv2.c			\
 				plat/common/plat_psci_common.c	\
 				${MTK_PLAT}/common/mtk_sip_svc.c		\
+				${MTK_PLAT}/common/drivers/efuse/mtk_efuse.c	\
 				${MTK_PLAT_SOC}/drivers/spm/spmc.c		\
-				${MTK_PLAT_SOC}/drivers/efuse/mtk_efuse.c	\
 				${MTK_PLAT_SOC}/plat_sip_calls.c		\
 				${MTK_PLAT_SOC}/plat_topology.c		\
 				${MTK_PLAT_SOC}/plat_pm.c		\
@@ -143,8 +166,7 @@ AUTH_SOURCES		:=	drivers/auth/auth_mod.c		\
 				drivers/auth/crypto_mod.c	\
 				drivers/auth/img_parser_mod.c	\
 				drivers/auth/tbbr/tbbr_cot_bl2.c	\
-				drivers/auth/tbbr/tbbr_cot_common.c	\
-				$(MBEDTLS_DIR)/library/md_wrap.c
+				drivers/auth/tbbr/tbbr_cot_common.c
 
 BL2_SOURCES		+=	${AUTH_SOURCES}			\
 				plat/common/tbbr/plat_tbbr.c	\
@@ -169,7 +191,34 @@ $(ROTPK_HASH): $(ROT_KEY)
 	openssl dgst -sha256 -binary > $@ 2>/dev/null
 endif
 
-all: $(BUILD_PLAT)/bl2.img
+# Make sure make command parameter takes effect .o files immediately
+$(call GEN_DEP_RULES,bl2,bl2_boot_ram bl2_boot_snand mtk_efuse)
+$(call GEN_DEP_RULES,bl32,mtk_efuse)
+
+bl2: bl2_update_dep
+
+bl2_update_dep:
+	${Q}$(call CHECK_DEP,bl2,bl2_boot_ram,RAM_BOOT_DEBUGGER_HOOK RAM_BOOT_UART_DL)
+	${Q}$(call CHECK_DEP,bl2,bl2_boot_snand,NMBM NMBM_MAX_RATIO NMBM_MAX_RESERVED_BLOCKS NMBM_DEFAULT_LOG_LEVEL)
+	${Q}$(call CHECK_DEP,bl2,mtk_efuse,TRUSTED_BOARD_BOOT)
+
+bl32: bl32_update_dep
+
+bl32_update_dep:
+	${Q}$(call CHECK_DEP,bl32,mtk_efuse,TRUSTED_BOARD_BOOT)
+
+# FIP compress
+ifeq ($(FIP_COMPRESS),1)
+BL31_PRE_TOOL_FILTER	:= XZ
+BL32_PRE_TOOL_FILTER	:= XZ
+BL33_PRE_TOOL_FILTER	:= XZ
+endif
+
+ifeq ($(BOOT_DEVICE),ram)
+bl2: $(BUILD_PLAT)/bl2.bin
+else
+bl2: $(BUILD_PLAT)/bl2.img
+endif
 
 ifneq ($(USE_MKIMAGE),1)
 ifneq ($(BROM_SIGN_KEY),)
@@ -178,8 +227,8 @@ endif
 
 $(BUILD_PLAT)/bl2.img: $(BUILD_PLAT)/bl2.bin $(DOIMAGETOOL)
 	-$(Q)rm -f $@.signkeyhash
-	$(Q)$(DOIMAGETOOL) -f $(BROM_HEADER_TYPE) -a $(BL2_BASE) -d		\
-		$(if $(BROM_SIGN_KEY), -s sha256+rsa-m1 -k $(BROM_SIGN_KEY))	\
+	$(Q)$(DOIMAGETOOL) -c mt7629 -f $(BROM_HEADER_TYPE) -a $(BL2_BASE) -d	\
+		$(if $(BROM_SIGN_KEY), -s sha256+rsa-m1pss -k $(BROM_SIGN_KEY))	\
 		$(if $(BROM_SIGN_KEY), -p $@.signkeyhash)			\
 		$(if $(DEVICE_HEADER_OFFSET), -o $(DEVICE_HEADER_OFFSET))	\
 		$(if $(NAND_TYPE), -n $(NAND_TYPE))				\
