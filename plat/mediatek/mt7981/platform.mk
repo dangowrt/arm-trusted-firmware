@@ -481,6 +481,7 @@ else
 bl2: $(BUILD_PLAT)/bl2.img
 endif
 
+ifneq ($(USE_MKIMAGE),1)
 ifneq ($(BROM_SIGN_KEY),)
 $(BUILD_PLAT)/bl2.img: $(BROM_SIGN_KEY)
 endif
@@ -500,5 +501,17 @@ $(BUILD_PLAT)/bl2.img: $(BL2_IMG_PAYLOAD) $(DOIMAGETOOL)
 
 $(DOIMAGETOOL):
 	$(Q)$(MAKE) --no-print-directory -C $(DOIMAGEPATH)
+else
+MKIMAGE ?= mkimage
+
+ifneq ($(BROM_SIGN_KEY)$(BL2_AR_VER),)
+$(warning BL2 signing/anti-rollback is not supported using mkimage)
+endif
+
+$(BUILD_PLAT)/bl2.img: $(BL2_IMG_PAYLOAD)
+	$(Q)$(MKIMAGE) -T mtk_image -a $(BL2_BASE) -e $(BL2_BASE)		\
+		-n "arm64=1;media=$(BROM_HEADER_TYPE)$(if $(NAND_TYPE),;nandinfo=$(NAND_TYPE))$(if $(DEVICE_HEADER_OFFSET),;hdroffset=$(DEVICE_HEADER_OFFSET))"	\
+		-d $(BL2_IMG_PAYLOAD) $@
+endif
 
 .PHONY: $(BUILD_PLAT)/bl2.img $(AUTO_AR_VER) $(AUTO_AR_CONF)
