@@ -25,6 +25,10 @@
 #define FIP_BASE			0x380000
 #define FIP_SIZE			0x200000
 
+#ifndef NMBM
+#define SNAND_MAX_BAD_BLOCK		3
+#endif
+
 #ifndef NMBM_MAX_RATIO
 #define NMBM_MAX_RATIO			1
 #endif
@@ -171,12 +175,26 @@ static size_t snand_read_range(int lba, uintptr_t buf, size_t size)
 	size_t sizeremain = size, chunksize;
 	uint64_t off = lba * cinfo.pagesize;
 	uint8_t *ptr = (uint8_t *)buf;
+	struct mtk_snand_chip_info info;
+	unsigned int bad_blocks = 0;
 	int ret = 0;
 
 	if (!snf)
 		return 0;
 
+	ret = mtk_snand_get_chip_info(snf, &info);
+	if (ret)
+		return 0;
+
 	while (sizeremain) {
+		while (mtk_snand_block_isbad(snf, off)) {
+			if (bad_blocks > SNAND_MAX_BAD_BLOCK)
+				return size - sizeremain;
+
+			off += info.blocksize;
+			++bad_blocks;
+		}
+
 		chunksize = cinfo.pagesize;
 		if (chunksize > sizeremain)
 			chunksize = sizeremain;

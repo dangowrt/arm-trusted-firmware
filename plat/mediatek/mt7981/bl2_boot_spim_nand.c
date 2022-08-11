@@ -28,6 +28,10 @@
 #define FIP_BASE			0x380000
 #define FIP_SIZE			0x200000
 
+#ifndef NMBM
+#define SNAND_MAX_BAD_BLOCK		3
+#endif
+
 #ifndef NMBM_MAX_RATIO
 #define NMBM_MAX_RATIO			1
 #endif
@@ -173,9 +177,10 @@ static size_t spim_nand_read_range(int lba, uintptr_t buf, size_t size)
 static size_t spim_nand_read_range(int lba, uintptr_t buf, size_t size)
 {
 	struct nand_device *nand_dev;
-	size_t length_read;
+	size_t sizeremain = size, chunksize, length_read;
 	uint64_t off;
 	int ret = 0;
+	unsigned int bad_blocks = 0;
 
 	nand_dev = get_nand_device();
 	if (nand_dev == NULL) {
@@ -184,11 +189,32 @@ static size_t spim_nand_read_range(int lba, uintptr_t buf, size_t size)
 	}
 
 	off = lba * nand_dev->page_size;
-	ret = nand_read(off, buf, size, &length_read);
-	if (ret < 0)
-		ERROR("spinand read fail: %d, read length: %ld\n", ret, length_read);
+	while (sizeremain) {
+		chunksize = nand_dev->block_size;
+		while (nand_dev->mtd_block_is_bad(off / nand_dev->block_size)) {
+			if (bad_blocks > SNAND_MAX_BAD_BLOCK)
+				return size - sizeremain;
 
-	return length_read;
+			off += chunksize;
+			++bad_blocks;
+		}
+
+		chunksize -= off % chunksize;
+		if (chunksize > sizeremain)
+			chunksize = sizeremain;
+
+		ret = nand_read(off, buf, chunksize, &length_read);
+		if (ret < 0) {
+			ERROR("spinand read fail: %d, read length: %ld\n", ret, length_read);
+			break;
+		}
+
+		off += length_read;
+		buf += length_read;
+		sizeremain -= length_read;
+	}
+
+	return size - sizeremain;
 }
 #endif
 
