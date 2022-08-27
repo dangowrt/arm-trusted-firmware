@@ -277,7 +277,6 @@ void bl2_platform_setup(void)
 	plat_mt_cpuxgpt_init();
 	generic_delay_timer_init();
 
-	mtk_wdt_init();
 	mtk_pin_init();
 #ifndef USING_BL2PL
 	mtk_pll_init();
@@ -285,6 +284,7 @@ void bl2_platform_setup(void)
 	mtk_pwrap_init();
 	mtk_pmic_init();
 	mtk_mem_init();
+	mtk_wdt_init();
 
 	mtk_io_setup();
 }
